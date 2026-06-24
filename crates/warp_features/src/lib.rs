@@ -892,6 +892,12 @@ pub enum FeatureFlag {
     /// Shows a warning in the agent view when the active conversation's
     /// provider-side prompt cache has expired.
     PromptCacheExpiryWarning,
+
+    /// When a user saves a BYO API key or custom inference endpoint in AI
+    /// settings while their default Agent Mode model isn't backed by a
+    /// credential they have (e.g. it's still an `auto` model), prompt them to
+    /// switch their default to a model that the new credential can serve.
+    SuggestDefaultModelOnByokKey,
 }
 
 static FLAG_STATES: [AtomicBool; cardinality::<FeatureFlag>()] =
@@ -961,6 +967,7 @@ pub const DOGFOOD_FLAGS: &[FeatureFlag] = &[
     FeatureFlag::PromptCacheExpiryWarning,
     FeatureFlag::PinnedTabs,
     FeatureFlag::ContextWindowUsageBreakdown,
+    FeatureFlag::SuggestDefaultModelOnByokKey,
 ];
 
 /// Features enabled for feature preview build users (e.g.: Friends of Warp).
