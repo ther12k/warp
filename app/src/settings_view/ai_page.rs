@@ -1168,7 +1168,7 @@ impl AISettingsPageView {
             // Driving the prompt off the key-store update (rather than the editor's
             // blur/Enter) means it fires reliably however the key was committed —
             // clicking outside the field, pressing Enter, or tabbing away.
-            me.maybe_prompt_for_newly_added_provider_key(ctx);
+            me.maybe_prompt_for_added_or_changed_provider_key(ctx);
             ctx.notify();
         });
 
@@ -2102,9 +2102,8 @@ impl AISettingsPageView {
     }
 
     /// Whether to offer switching the default model. Scoped to free-plan users
-    /// who are out of monthly (base-plan) credits, since only they hit the
-    /// "no credits" error with an `auto` model. Also skips when the current
-    /// default is already served by a BYO credential.
+    /// who have no Warp-hosted AI credits left. Also skips when the current default
+    /// is already served by a BYO credential.
     fn should_offer_default_model_switch(ctx: &AppContext) -> bool {
         // Exclude only confirmed paid plans. Solo/individual users have no
         // `current_workspace`, and billing may not have loaded yet (Unknown), so
@@ -2115,17 +2114,25 @@ impl AISettingsPageView {
         let on_paid_plan = UserWorkspaces::as_ref(ctx)
             .current_workspace()
             .is_some_and(|workspace| workspace.billing_metadata.is_user_on_paid_plan());
-        let out_of_monthly_credits = !AIRequestUsageModel::as_ref(ctx).has_requests_remaining();
-        !on_paid_plan && out_of_monthly_credits && !Self::active_base_model_is_byo_covered(ctx)
+        let out_of_warp_hosted_credits =
+            !AIRequestUsageModel::as_ref(ctx).has_any_warp_hosted_ai_remaining(ctx);
+        !on_paid_plan && out_of_warp_hosted_credits && !Self::active_base_model_is_byo_covered(ctx)
     }
 
-    /// Detects a provider key that was just added (absent -> present) by diffing
-    /// against the last-seen keys, then offers to switch the default model. Run
-    /// from `ApiKeyManagerEvent::KeysUpdated` so it fires regardless of how the
-    /// key editor was committed.
-    fn maybe_prompt_for_newly_added_provider_key(&mut self, ctx: &mut ViewContext<Self>) {
+    /// Detects a provider key that was just added (absent -> present) or changed
+    /// (present -> different value) by diffing against the last-seen keys, then
+    /// offers to switch the default model. Run from `ApiKeyManagerEvent::KeysUpdated`
+    /// so it fires regardless of how the key editor was committed.
+    fn maybe_prompt_for_added_or_changed_provider_key(&mut self, ctx: &mut ViewContext<Self>) {
         let current = ApiKeyManager::as_ref(ctx).keys().clone();
-        let newly_added = [
+        // Treat whitespace-only keys as absent so they never count as a change.
+        let normalize = |key: &Option<String>| {
+            key.as_deref()
+                .map(str::trim)
+                .filter(|key| !key.is_empty())
+                .map(str::to_owned)
+        };
+        let updated = [
             (
                 LLMProvider::OpenAI,
                 &self.last_seen_provider_keys.openai,
@@ -2144,16 +2151,12 @@ impl AISettingsPageView {
         ]
         .into_iter()
         .find_map(|(provider, previous_key, current_key)| {
-            let was_present = previous_key
-                .as_deref()
-                .is_some_and(|key| !key.trim().is_empty());
-            let now_present = current_key
-                .as_deref()
-                .is_some_and(|key| !key.trim().is_empty());
-            (!was_present && now_present).then_some(provider)
+            let previous_value = normalize(previous_key);
+            let current_value = normalize(current_key);
+            (current_value.is_some() && current_value != previous_value).then_some(provider)
         });
         self.last_seen_provider_keys = current;
-        if let Some(provider) = newly_added {
+        if let Some(provider) = updated {
             self.maybe_prompt_set_default_model_for_provider(provider, ctx);
         }
     }
