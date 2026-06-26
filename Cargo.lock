@@ -15824,7 +15824,6 @@ dependencies = [
  "command",
  "warp",
  "warp_channel_config",
- "warp_cli",
  "warp_core",
 ]
 

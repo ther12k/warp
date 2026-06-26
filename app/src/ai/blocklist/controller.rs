@@ -30,8 +30,9 @@ use warpui::{AppContext, Entity, EntityId, ModelContext, ModelHandle, SingletonE
 
 use self::response_stream::{ResponseStream, ResponseStreamEvent};
 use super::action_model::{BlocklistAIActionEvent, BlocklistAIActionModel};
-use super::agent_view::{AgentViewController, AgentViewControllerEvent, AgentViewEntryOrigin};
+use super::agent_view::AgentViewEntryOrigin;
 use super::context_model::{BlocklistAIContextModel, PendingAttachment, PendingFile};
+use super::conversation_surface_model::{ConversationSurfaceEvent, ConversationSurfaceModel};
 use super::history_model::BlocklistAIHistoryModel;
 use super::input_model::InputConfig;
 use super::orchestration_event_streamer::{
@@ -316,6 +317,7 @@ pub struct BlocklistAIController {
     active_session: ModelHandle<ActiveSession>,
     input_model: ModelHandle<BlocklistAIInputModel>,
     context_model: ModelHandle<BlocklistAIContextModel>,
+    conversation_surface: ModelHandle<ConversationSurfaceModel>,
     action_model: ModelHandle<BlocklistAIActionModel>,
     terminal_model: Arc<FairMutex<TerminalModel>>,
 
@@ -428,62 +430,14 @@ impl BlocklistAIController {
         SessionContext::from_session(self.active_session.as_ref(ctx), ctx).skill_path_origin()
     }
 
-    /// Creates a controller for a GUI terminal view.
+    /// Creates a controller for a terminal surface.
     #[allow(clippy::too_many_arguments)]
-    pub(crate) fn new_for_terminal_view(
+    pub(crate) fn new(
         input_model: ModelHandle<BlocklistAIInputModel>,
         context_model: ModelHandle<BlocklistAIContextModel>,
+        conversation_surface: ModelHandle<ConversationSurfaceModel>,
         action_model: ModelHandle<BlocklistAIActionModel>,
         active_session: ModelHandle<ActiveSession>,
-        agent_view_controller: ModelHandle<AgentViewController>,
-        terminal_model: Arc<FairMutex<TerminalModel>>,
-        terminal_view_id: EntityId,
-        ctx: &mut ModelContext<Self>,
-    ) -> Self {
-        Self::new_for_surface(
-            input_model,
-            context_model,
-            action_model,
-            active_session,
-            Some(agent_view_controller),
-            terminal_model,
-            terminal_view_id,
-            ctx,
-        )
-    }
-
-    /// Creates a controller for a TUI surface without Agent View lifecycle behavior.
-    #[allow(clippy::too_many_arguments)]
-    #[cfg(feature = "tui")]
-    pub(crate) fn new_for_tui_surface(
-        input_model: ModelHandle<BlocklistAIInputModel>,
-        context_model: ModelHandle<BlocklistAIContextModel>,
-        action_model: ModelHandle<BlocklistAIActionModel>,
-        active_session: ModelHandle<ActiveSession>,
-        terminal_model: Arc<FairMutex<TerminalModel>>,
-        terminal_surface_id: EntityId,
-        ctx: &mut ModelContext<Self>,
-    ) -> Self {
-        Self::new_for_surface(
-            input_model,
-            context_model,
-            action_model,
-            active_session,
-            None,
-            terminal_model,
-            terminal_surface_id,
-            ctx,
-        )
-    }
-
-    /// Creates a controller with the Agent View lifecycle appropriate for the surface.
-    #[allow(clippy::too_many_arguments)]
-    fn new_for_surface(
-        input_model: ModelHandle<BlocklistAIInputModel>,
-        context_model: ModelHandle<BlocklistAIContextModel>,
-        action_model: ModelHandle<BlocklistAIActionModel>,
-        active_session: ModelHandle<ActiveSession>,
-        agent_view_controller: Option<ModelHandle<AgentViewController>>,
         terminal_model: Arc<FairMutex<TerminalModel>>,
         terminal_view_id: EntityId,
         ctx: &mut ModelContext<Self>,
@@ -606,48 +560,45 @@ impl BlocklistAIController {
             me.send_follow_up_for_conversation(*conversation_id, trigger, ctx);
         });
 
-        if let Some(agent_view_controller) = agent_view_controller.as_ref() {
-            ctx.subscribe_to_model(agent_view_controller, |me, _, event, ctx| {
-                let AgentViewControllerEvent::ExitedAgentView {
-                    conversation_id,
-                    final_exchange_count,
-                    is_exit_before_new_entrance,
-                    ..
-                } = event
-                else {
-                    return;
-                };
+        ctx.subscribe_to_model(&conversation_surface, |me, _, event, ctx| {
+            let ConversationSurfaceEvent::AgentViewExited {
+                conversation_id,
+                final_exchange_count,
+                is_exit_before_new_entrance,
+            } = event
+            else {
+                return;
+            };
 
-                // Skip if this exit is part of an in-place switch — cancelling here
-                // would kill an in-flight stream every time the user navigates.
-                if *is_exit_before_new_entrance {
-                    return;
-                }
+            // Skip if this exit is part of an in-place switch — cancelling here
+            // would kill an in-flight stream every time the user navigates.
+            if *is_exit_before_new_entrance {
+                return;
+            }
 
-                // If we exited a brand-new empty conversation, there's nothing meaningful to cancel.
-                if *final_exchange_count == 0 {
-                    return;
-                }
+            // If we exited a brand-new empty conversation, there's nothing meaningful to cancel.
+            if *final_exchange_count == 0 {
+                return;
+            }
 
-                let history = BlocklistAIHistoryModel::handle(ctx);
-                let Some(conversation) = history.as_ref(ctx).conversation(conversation_id) else {
-                    return;
-                };
+            let history = BlocklistAIHistoryModel::handle(ctx);
+            let Some(conversation) = history.as_ref(ctx).conversation(conversation_id) else {
+                return;
+            };
 
-                // Viewer sessions should not send cancellations.
-                if conversation.is_viewing_shared_session() {
-                    return;
-                }
+            // Viewer sessions should not send cancellations.
+            if conversation.is_viewing_shared_session() {
+                return;
+            }
 
-                if conversation.status().is_in_progress() {
-                    me.cancel_conversation_progress(
-                        *conversation_id,
-                        CancellationReason::ManuallyCancelled,
-                        ctx,
-                    );
-                }
-            });
-        }
+            if conversation.status().is_in_progress() {
+                me.cancel_conversation_progress(
+                    *conversation_id,
+                    CancellationReason::ManuallyCancelled,
+                    ctx,
+                );
+            }
+        });
 
         // Subscribe to the orchestration event service to inject events
         // (e.g. MessagesReceivedFromAgents) into conversations that receive inter-agent messages.
@@ -671,6 +622,7 @@ impl BlocklistAIController {
         Self {
             input_model,
             context_model,
+            conversation_surface,
             action_model,
             active_session,
             terminal_model,
@@ -1581,7 +1533,12 @@ impl BlocklistAIController {
             history.mark_active_conversation_id(conversation_id, self.terminal_view_id, ctx);
         });
 
-        if !FeatureFlag::AgentView.is_enabled() && trigger == FollowUpTrigger::Auto {
+        if !self
+            .conversation_surface
+            .as_ref(ctx)
+            .uses_agent_view_selection()
+            && trigger == FollowUpTrigger::Auto
+        {
             // If `AgentView` is enabled, the conversation is guaranteed to be active while the
             // conversation is in-progress and thus while actions are executing/finishing.
             self.context_model.update(ctx, |context_model, ctx| {
@@ -2621,7 +2578,12 @@ impl BlocklistAIController {
 
         // If `AgentView` is enabled, the agent view is guaranteed to be active when the agent
         // input is sent, so logic to ensure follow-ups is redundant.
-        if !FeatureFlag::AgentView.is_enabled() && default_to_follow_up_on_success {
+        if !self
+            .conversation_surface
+            .as_ref(ctx)
+            .uses_agent_view_selection()
+            && default_to_follow_up_on_success
+        {
             // Set the input mode to AI but allow autodetection to run
             self.input_model.update(ctx, |input_model, ctx| {
                 input_model.set_input_config_for_classic_mode(

@@ -5,6 +5,7 @@ pub mod block;
 pub mod code_block;
 mod context_model;
 mod controller;
+mod conversation_surface_model;
 pub(crate) mod handoff;
 
 pub(crate) mod local_agent_task_sync_model;
@@ -44,7 +45,7 @@ pub(crate) use block::{init, model, AIBlock, AIBlockEvent, RequestedEditResoluti
 pub use block::{keyboard_navigable_buttons, toggleable_items};
 pub(crate) use context_model::{
     block_context_from_terminal_model, AttachmentType, BlocklistAIContextEvent,
-    BlocklistAIContextModel, PendingAttachment, PendingFile, PendingQueryState,
+    BlocklistAIContextModel, PendingAttachment, PendingFile,
 };
 pub use controller::input_context::{
     BLOCK_CONTEXT_ATTACHMENT_REGEX, DIFF_HUNK_ATTACHMENT_REGEX, DRIVE_OBJECT_ATTACHMENT_REGEX,
@@ -55,6 +56,9 @@ pub(crate) use controller::response_stream::ResponseStreamId;
 pub(crate) use controller::{
     BlocklistAIController, BlocklistAIControllerEvent, ClientIdentifiers, SessionContext,
     SlashCommandRequest,
+};
+pub(crate) use conversation_surface_model::{
+    ConversationSurfaceEvent, ConversationSurfaceModel, PendingQueryState,
 };
 pub(crate) use history_model::{
     AIQueryHistory, AIQueryHistoryOutputStatus, BeginConversationRenameError,

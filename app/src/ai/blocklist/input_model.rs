@@ -86,9 +86,10 @@ impl From<InputClassifierDecisionSource> for InputTypeAutoDetectionSource {
     }
 }
 
-use super::agent_view::{AgentViewController, AgentViewControllerEvent, AgentViewEntryOrigin};
+use super::agent_view::AgentViewEntryOrigin;
 use super::context_model::BlocklistAIContextModel;
 use super::telemetry_banner::should_collect_ai_ugc_telemetry;
+use super::{ConversationSurfaceEvent, ConversationSurfaceModel};
 use crate::input_classifier::InputClassifierModel;
 use crate::settings::{AISettings, AISettingsChangedEvent, InputBoxType, InputSettings};
 use crate::terminal::cli_agent_sessions::{
@@ -208,7 +209,7 @@ pub struct BlocklistAIInputModel {
     /// if a persistent lock is in place and a buffer is submitted.
     was_lock_set_with_empty_buffer: bool,
 
-    agent_view_controller: Option<ModelHandle<AgentViewController>>,
+    conversation_surface: ModelHandle<ConversationSurfaceModel>,
 
     /// Handle to the per-pane context model. Used to read pending image / file attachments
     /// when deciding whether to force-lock the input to AI mode (see
@@ -222,38 +223,10 @@ pub struct BlocklistAIInputModel {
 }
 
 impl BlocklistAIInputModel {
-    /// Creates input state for a GUI terminal view.
-    pub(crate) fn new_for_terminal_view(
+    /// Creates input state for a terminal surface.
+    pub(crate) fn new(
         model: Arc<FairMutex<TerminalModel>>,
-        agent_view_controller: ModelHandle<AgentViewController>,
-        ai_context_model: ModelHandle<BlocklistAIContextModel>,
-        terminal_view_id: EntityId,
-        ctx: &mut ModelContext<Self>,
-    ) -> Self {
-        Self::new_for_surface(
-            model,
-            Some(agent_view_controller),
-            ai_context_model,
-            terminal_view_id,
-            ctx,
-        )
-    }
-
-    /// Creates input state for a TUI surface without Agent View behavior.
-    #[cfg(feature = "tui")]
-    pub(crate) fn new_for_tui_surface(
-        model: Arc<FairMutex<TerminalModel>>,
-        ai_context_model: ModelHandle<BlocklistAIContextModel>,
-        terminal_surface_id: EntityId,
-        ctx: &mut ModelContext<Self>,
-    ) -> Self {
-        Self::new_for_surface(model, None, ai_context_model, terminal_surface_id, ctx)
-    }
-
-    /// Creates input state with the controller appropriate for the surface.
-    fn new_for_surface(
-        model: Arc<FairMutex<TerminalModel>>,
-        agent_view_controller: Option<ModelHandle<AgentViewController>>,
+        conversation_surface: ModelHandle<ConversationSurfaceModel>,
         ai_context_model: ModelHandle<BlocklistAIContextModel>,
         terminal_view_id: EntityId,
         ctx: &mut ModelContext<Self>,
@@ -341,91 +314,86 @@ impl BlocklistAIInputModel {
             }
         });
 
-        if FeatureFlag::AgentView.is_enabled() {
-            if let Some(agent_view_controller) = agent_view_controller.as_ref() {
-                ctx.subscribe_to_model(agent_view_controller, |me, _, event, ctx| match event {
-                    AgentViewControllerEvent::EnteredAgentView {
-                        display_mode,
-                        origin,
-                        ..
-                    } => {
-                        if display_mode.is_inline() {
-                            me.set_input_config_internal(
-                                InputConfig {
-                                    input_type: InputType::AI,
-                                    is_locked: true,
-                                },
-                                Some(InputTypeAutoDetectionSource::InlineAgentViewEntry),
-                                ctx,
-                            );
-                        } else if matches!(origin, AgentViewEntryOrigin::ClearBuffer) {
-                            let is_autodetection_enabled =
-                                AISettings::as_ref(ctx).is_ai_autodetection_enabled(ctx);
-                            me.set_input_config_internal(
-                                InputConfig {
-                                    input_type: me.input_config().input_type,
-                                    is_locked: !is_autodetection_enabled,
-                                },
-                                None,
-                                ctx,
-                            );
-                        } else if me.has_locking_attachment(ctx) {
-                            // Interaction patterns that should fully bypass NLD on
-                            // entry: image / file attachment in progress / attached.
-                            // Force-lock to AI regardless of the user's NLD setting so the
-                            // classifier never gets a chance to drop the buffer back to shell.
-                            me.set_input_config_internal(
-                                InputConfig {
-                                    input_type: InputType::AI,
-                                    is_locked: true,
-                                },
-                                Some(InputTypeAutoDetectionSource::AttachmentForcedAi),
-                                ctx,
-                            );
-                        } else {
-                            let is_autodetection_enabled =
-                                AISettings::as_ref(ctx).is_ai_autodetection_enabled(ctx);
-                            if is_autodetection_enabled {
-                                // Upon entering the agent view, temporarily disable autodetection as
-                                // the existing buffer contents, if any are now most likely intended to
-                                // be sent to the agent, and if the input would otherwise trigger a
-                                // false-negative classification, we'd drop the user right into shell
-                                // mode.
-                                me.temporarily_disable_autodetection();
-                            }
-                            me.set_input_config_internal(
-                                InputConfig {
-                                    input_type: InputType::AI,
-                                    is_locked: !is_autodetection_enabled,
-                                },
-                                None,
-                                ctx,
-                            );
-                        }
+        ctx.subscribe_to_model(&conversation_surface, |me, _, event, ctx| match event {
+            ConversationSurfaceEvent::AgentViewEntered {
+                display_mode,
+                origin,
+            } => {
+                if display_mode.is_inline() {
+                    me.set_input_config_internal(
+                        InputConfig {
+                            input_type: InputType::AI,
+                            is_locked: true,
+                        },
+                        Some(InputTypeAutoDetectionSource::InlineAgentViewEntry),
+                        ctx,
+                    );
+                } else if matches!(origin, AgentViewEntryOrigin::ClearBuffer) {
+                    let is_autodetection_enabled =
+                        AISettings::as_ref(ctx).is_ai_autodetection_enabled(ctx);
+                    me.set_input_config_internal(
+                        InputConfig {
+                            input_type: me.input_config().input_type,
+                            is_locked: !is_autodetection_enabled,
+                        },
+                        None,
+                        ctx,
+                    );
+                } else if me.has_locking_attachment(ctx) {
+                    // Interaction patterns that should fully bypass NLD on
+                    // entry: image / file attachment in progress / attached.
+                    // Force-lock to AI regardless of the user's NLD setting so the
+                    // classifier never gets a chance to drop the buffer back to shell.
+                    me.set_input_config_internal(
+                        InputConfig {
+                            input_type: InputType::AI,
+                            is_locked: true,
+                        },
+                        Some(InputTypeAutoDetectionSource::AttachmentForcedAi),
+                        ctx,
+                    );
+                } else {
+                    let is_autodetection_enabled =
+                        AISettings::as_ref(ctx).is_ai_autodetection_enabled(ctx);
+                    if is_autodetection_enabled {
+                        // Upon entering the agent view, temporarily disable autodetection as
+                        // the existing buffer contents, if any are now most likely intended to
+                        // be sent to the agent, and if the input would otherwise trigger a
+                        // false-negative classification, we'd drop the user right into shell
+                        // mode.
+                        me.temporarily_disable_autodetection();
                     }
-                    AgentViewControllerEvent::ExitedAgentView {
-                        is_exit_before_new_entrance,
-                        ..
-                    } => {
-                        if !is_exit_before_new_entrance {
-                            // When truly exiting agent view, use the terminal-specific NLD setting
-                            // since the user is returning to terminal mode.
-                            let is_nld_in_terminal_enabled =
-                                AISettings::as_ref(ctx).is_nld_in_terminal_enabled(ctx);
-                            me.set_input_config_internal(
-                                InputConfig {
-                                    input_type: InputType::Shell,
-                                    is_locked: !is_nld_in_terminal_enabled,
-                                },
-                                None,
-                                ctx,
-                            );
-                        }
-                    }
-                    _ => (),
-                });
+                    me.set_input_config_internal(
+                        InputConfig {
+                            input_type: InputType::AI,
+                            is_locked: !is_autodetection_enabled,
+                        },
+                        None,
+                        ctx,
+                    );
+                }
             }
-        }
+            ConversationSurfaceEvent::AgentViewExited {
+                is_exit_before_new_entrance,
+                ..
+            } => {
+                if !is_exit_before_new_entrance {
+                    // When truly exiting agent view, use the terminal-specific NLD setting
+                    // since the user is returning to terminal mode.
+                    let is_nld_in_terminal_enabled =
+                        AISettings::as_ref(ctx).is_nld_in_terminal_enabled(ctx);
+                    me.set_input_config_internal(
+                        InputConfig {
+                            input_type: InputType::Shell,
+                            is_locked: !is_nld_in_terminal_enabled,
+                        },
+                        None,
+                        ctx,
+                    );
+                }
+            }
+            ConversationSurfaceEvent::PendingQueryStateUpdated => {}
+        });
 
         let is_autodetection_enabled = if FeatureFlag::AgentView.is_enabled() {
             AISettings::as_ref(ctx).is_nld_in_terminal_enabled(ctx)
@@ -438,7 +406,7 @@ impl BlocklistAIInputModel {
                 input_type: InputType::Shell,
                 is_locked: !is_autodetection_enabled,
             },
-            agent_view_controller,
+            conversation_surface,
             ai_context_model,
             terminal_view_id,
             last_ai_autodetection_ts: None,
@@ -452,16 +420,16 @@ impl BlocklistAIInputModel {
 
     /// Returns whether the GUI Agent View integration is active.
     fn is_agent_view_active(&self, app: &AppContext) -> bool {
-        self.agent_view_controller
-            .as_ref()
-            .is_some_and(|controller| controller.as_ref(app).is_active())
+        self.conversation_surface
+            .as_ref(app)
+            .is_agent_view_active(app)
     }
 
     /// Returns whether the GUI Agent View integration is fullscreen.
     fn is_agent_view_fullscreen(&self, app: &AppContext) -> bool {
-        self.agent_view_controller
-            .as_ref()
-            .is_some_and(|controller| controller.as_ref(app).is_fullscreen())
+        self.conversation_surface
+            .as_ref(app)
+            .is_agent_view_fullscreen(app)
     }
 
     /// Convenience wrapper around `BlocklistAIContextModel::has_locking_attachment`.

@@ -10,17 +10,19 @@ use warpui::{AppContext, SingletonEntity};
 
 use crate::auth::auth_manager::{AuthManager, AuthManagerEvent};
 use crate::auth::AuthStateProvider;
+mod args;
 
 mod conversation_model;
 mod prompt_stream;
+pub(crate) use args::TuiArgs;
 
 /// Entry point invoked from `run_internal` once the headless app is initialized.
 ///
 /// Authenticates the user when needed, then dispatches the requested TUI operation.
-pub fn init(ctx: &mut AppContext) {
+pub(crate) fn init(args: TuiArgs, ctx: &mut AppContext) {
     let auth_state = AuthStateProvider::as_ref(ctx).get();
     if auth_state.is_logged_in() {
-        finish_initialization(ctx);
+        finish_initialization(args, ctx);
         return;
     }
 
@@ -53,7 +55,7 @@ pub fn init(ctx: &mut AppContext) {
             ctx.open_url(url_to_open);
         }
         AuthManagerEvent::AuthComplete => {
-            finish_initialization(ctx);
+            finish_initialization(args.clone(), ctx);
         }
         AuthManagerEvent::AuthFailed(err) => {
             ctx.terminate_app(
@@ -70,8 +72,8 @@ pub fn init(ctx: &mut AppContext) {
 }
 
 /// Runs the requested TUI operation after authentication is ready.
-fn finish_initialization(ctx: &mut AppContext) {
-    if !prompt_stream::start_from_environment(ctx) {
+fn finish_initialization(args: TuiArgs, ctx: &mut AppContext) {
+    if !prompt_stream::start(args, ctx) {
         print_user_id_and_exit(ctx);
     }
 }

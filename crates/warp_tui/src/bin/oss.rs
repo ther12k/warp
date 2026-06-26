@@ -9,10 +9,8 @@
 use anyhow::Result;
 use warp_core::channel::{Channel, ChannelConfig, ChannelState, OzConfig, WarpServerConfig};
 use warp_core::AppId;
-mod args;
 
 fn main() -> Result<()> {
-    args::forward_args_to_environment()?;
     let mut state = ChannelState::new(
         Channel::Oss,
         ChannelConfig {

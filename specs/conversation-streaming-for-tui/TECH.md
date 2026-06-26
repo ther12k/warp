@@ -1,14 +1,18 @@
 # TUI conversation streaming — TECH
 ## Context
 This change adds a one-shot TUI path that sends a prompt through Warp's production AI controller and streams plain-text output to stdout. The reusable coordination model is designed to support a future interactive TUI without introducing an alternate request or response-stream implementation.
-`BlocklistAIHistoryModel` stores conversations and active/progress state per terminal surface. Active conversation means the current or most recent stream/progress target; it remains distinct from the conversation selected for the next prompt (`app/src/ai/blocklist/history_model.rs:206`, `app/src/ai/blocklist/context_model.rs:895`).
-GUI terminal views select conversations through `AgentViewController`. TUI surfaces select conversations through `BlocklistAIContextModel::PendingQueryState`; they do not construct Agent View UI state (`app/src/ai/blocklist/context_model.rs:73`).
+`BlocklistAIHistoryModel` stores conversations and active/progress state per terminal surface. Active conversation means the current or most recent stream/progress target; it remains distinct from the conversation selected for the next prompt (`app/src/ai/blocklist/history_model.rs:206`, `app/src/ai/blocklist/conversation_surface_model.rs`).
+Every terminal surface owns a `ConversationSurfaceModel`, which is the single shared-model boundary for selected/next-prompt conversation behavior. Its GUI backend delegates Agent View presentation lifecycle to `AgentViewController`; its TUI backend owns selection without constructing Agent View UI state.
 ## Design
-### Explicit surface constructors
-`BlocklistAIContextModel`, `BlocklistAIInputModel`, and `BlocklistAIController` expose explicit constructors for their two supported surfaces:
-- `new_for_terminal_view(...)` requires an `AgentViewController` and preserves GUI Agent View lifecycle behavior.
-- `new_for_tui_surface(...)` does not accept an `AgentViewController`; selection stays in pending query state and Agent View lifecycle subscriptions are omitted.
-The public constructor name makes the surface choice explicit. A private `new_for_surface(...)` implementation contains shared subscription and initialization logic (`app/src/ai/blocklist/context_model.rs:176`, `app/src/ai/blocklist/input_model.rs:225`, `app/src/ai/blocklist/controller.rs:430`).
+### Conversation surface boundary
+GUI and TUI composition roots explicitly construct the appropriate `ConversationSurfaceModel` backend (`app/src/terminal/view.rs`, `app/src/tui/prompt_stream.rs`). The model centralizes:
+- selected/next-prompt conversation lookup
+- new and existing conversation targeting
+- pending-query state and autoexecute override
+- selection reconciliation for clear, split, remove, delete, and transfer history events
+- surface-neutral Agent View lifecycle events needed by shared models
+
+`BlocklistAIContextModel`, `BlocklistAIInputModel`, and `BlocklistAIController` each require a `ConversationSurfaceModel`. They never accept an optional `AgentViewController` and never branch on whether Agent View exists. Context owns pending attachments and request context, input owns input-mode behavior, and the controller owns request/action/stream behavior. Only `ConversationSurfaceModel` knows whether the surface is GUI or TUI (`app/src/ai/blocklist/conversation_surface_model.rs`).
 ### Terminal-surface-scoped history
 WarpUI `EntityId` is the routing key for a terminal surface. History fields, methods, and events use `terminal_surface_id` terminology consistently:
 - live, cleared, and active conversation IDs are keyed by terminal surface
@@ -16,8 +20,8 @@ WarpUI `EntityId` is the routing key for a terminal surface. History fields, met
 - GUI-local APIs retain terminal-view terminology when they specifically address `TerminalView`
 Moving a conversation between surfaces emits `ConversationTransferredBetweenTerminalSurfaces`, allowing the previous surface to discard rendered blocks while the destination becomes canonical (`app/src/ai/blocklist/history_model.rs:1047`, `app/src/ai/blocklist/history_model.rs:2855`).
 ### TUI conversation coordination
-`TuiConversationModel` is the reusable per-surface coordination boundary (`app/src/tui/conversation_model.rs:31`). It contains no transcript widgets and coordinates:
-- the surface's selected conversation
+`TuiConversationModel` is the reusable TUI presentation coordinator (`app/src/tui/conversation_model.rs:31`). It contains no transcript widgets and coordinates:
+- the TUI backend of the surface's selected conversation model
 - creation and selection of a new conversation
 - restore and selection of an existing conversation
 - prompt submission through `BlocklistAIController`
@@ -26,10 +30,10 @@ Moving a conversation between surfaces emits `ConversationTransferredBetweenTerm
 ### One-shot prompt streaming
 `PromptStreamSurface` adapts `TuiConversationModel` events to stdout and application termination (`app/src/tui/prompt_stream.rs:57`). It is named for its actual behavior rather than as a test fixture.
 TUI initialization always completes authentication before dispatching either prompt streaming or the default user-ID command (`app/src/tui.rs:23`). Prompt streaming uses the normal local terminal-manager and PTY lifecycle; there is no surface-specific PTY startup switch.
-`PtySpawner` can safely use the standard terminal-server subprocess from a `warp-tui` executable. The TUI argument bridge recognizes Warp worker invocations and leaves their arguments untouched; `warp::run_tui()` dispatches them through the same worker runner used by `warp::run()` before starting the TUI frontend (`crates/warp_tui/src/bin/args.rs:11`, `app/src/lib.rs:631`). This lets TUI launches register the same early `PtySpawner` singleton as other Warp launches without recursively starting more TUI frontends, and preserves dispatch for other current-executable workers.
+`PtySpawner` can safely use the standard terminal-server subprocess from a `warp-tui` executable. `warp::run_tui()` dispatches Warp worker invocations through the same worker runner used by `warp::run()` before starting the TUI frontend (`app/src/lib.rs:631`). Only non-worker invocations reach app-owned TUI frontend argument parsing (`app/src/tui/args.rs:5`). This lets TUI launches register the same early `PtySpawner` singleton as other Warp launches without recursively starting more TUI frontends, and preserves dispatch for other current-executable workers.
 The adapter prints the local conversation ID, changed plain-text snapshots, and final status. Tool actions fail clearly because this phase does not provide approval or action UI.
 ### Channel-specific binaries
-The `warp_tui` package mirrors GUI channel binaries. Every channel-specific binary uses the shared `src/bin/args.rs` module through a normal sibling `mod args;` declaration. Arguments are forwarded to headless app initialization:
+The `warp_tui` package mirrors GUI channel binaries. Each channel-specific binary only configures `ChannelState` and calls `warp::run_tui()`; worker dispatch and frontend argument parsing remain in the `warp` app crate. The TUI frontend accepts:
 - `--prompt <text>`
 - `--conversation-id <local-ai-conversation-id>`
 Bare `cargo run -p warp_tui` uses the OSS/production channel; `./script/run-tui -- --prompt ...` selects the internal local channel when its channel config is available.
@@ -53,12 +57,13 @@ flowchart TD
 ## Testing and validation
 Automated coverage verifies:
 - terminal-surface-scoped history maps and active/progress state
-- TUI context selection remains independent from GUI Agent View state
+- GUI and TUI conversation surface selection behavior
 - creating a TUI conversation selects it for the correct terminal surface
+- split and removal events reconcile TUI surface selection
 - selecting a new conversation, restoring an existing conversation, and sending a follow-up retain the same local conversation ID
 - mock response-stream events flow through `BlocklistAIController` into filtered history/model events
-- every channel-specific TUI binary forwards prompt-streaming CLI arguments
-- Warp worker invocations bypass TUI prompt parsing and use the shared worker dispatcher
+- app-owned TUI frontend parsing accepts prompt-streaming CLI arguments
+- Warp worker invocations dispatch before TUI frontend argument parsing
 Manual validation:
 - `cargo run -p warp_tui -- --prompt "Reply with exactly: hello from tui"` emits a local ID, streamed text, and `status=Success`
 - a separate process using that ID with `--conversation-id` restores the conversation and recalls the previous response
@@ -78,7 +83,7 @@ Run:
 - A raw server-stream client that bypasses `BlocklistAIController`
 - A stable external stdout protocol
 ## Risks and mitigations
-- **GUI behavior regresses.** Explicit GUI constructors require `AgentViewController` and preserve existing Agent View subscriptions.
-- **Active/progress and selected/next-prompt semantics blur.** Keep active state in history and selection in each surface's context/controller model.
+- **GUI behavior regresses.** The GUI `ConversationSurfaceModel` backend delegates selection and lifecycle behavior to the existing `AgentViewController` and re-emits lifecycle events to shared models.
+- **Active/progress and selected/next-prompt semantics blur.** Keep active state in history and selected/next-prompt behavior behind `ConversationSurfaceModel`.
 - **A TUI selection becomes invalid.** Reconcile selection from removal, deletion, transfer, clear, and split events.
 - **One-shot presentation policy leaks into reusable models.** Keep stdout, termination, and unsupported-action behavior in `PromptStreamSurface`.

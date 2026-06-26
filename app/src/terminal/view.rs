@@ -254,13 +254,13 @@ use crate::ai::blocklist::{
     BlocklistAIActionModel, BlocklistAIContextEvent, BlocklistAIContextModel,
     BlocklistAIController, BlocklistAIControllerEvent, BlocklistAIHistoryEvent,
     BlocklistAIHistoryModel, BlocklistAIInputEvent, BlocklistAIInputModel, ClientIdentifiers,
-    ConversationStatusUpdate, InputConfig, InputType, InputTypeAutoDetectionSource,
-    LegacyPassiveSuggestionsEvent, LegacyPassiveSuggestionsModel, MaaPassiveSuggestionsEvent,
-    MaaPassiveSuggestionsModel, PassiveSuggestionsModels, PendingAttachment, PendingQueryState,
-    QueuedQuery, QueuedQueryId, QueuedQueryModel, QueuedQueryOrigin, RequestFileEditsFormatKind,
-    ShellCommandExecutor, ShellCommandExecutorEvent, SlashCommandRequest, StartAgentExecutor,
-    StartAgentExecutorEvent, StartAgentRequest, ATTACH_AS_AGENT_MODE_CONTEXT_TEXT,
-    PRE_REWIND_PREFIX,
+    ConversationStatusUpdate, ConversationSurfaceModel, InputConfig, InputType,
+    InputTypeAutoDetectionSource, LegacyPassiveSuggestionsEvent, LegacyPassiveSuggestionsModel,
+    MaaPassiveSuggestionsEvent, MaaPassiveSuggestionsModel, PassiveSuggestionsModels,
+    PendingAttachment, PendingQueryState, QueuedQuery, QueuedQueryId, QueuedQueryModel,
+    QueuedQueryOrigin, RequestFileEditsFormatKind, ShellCommandExecutor, ShellCommandExecutorEvent,
+    SlashCommandRequest, StartAgentExecutor, StartAgentExecutorEvent, StartAgentRequest,
+    ATTACH_AS_AGENT_MODE_CONTEXT_TEXT, PRE_REWIND_PREFIX,
 };
 use crate::ai::conversation_details_panel::ConversationDetailsPanelEvent;
 use crate::ai::conversation_utils;
@@ -3444,20 +3444,27 @@ impl TerminalView {
             ctx.notify();
         });
 
-        let ai_context_model = ctx.add_model(|ctx| {
-            BlocklistAIContextModel::new_for_terminal_view(
-                sessions.clone(),
-                &model_events_handle,
-                model.clone(),
+        let conversation_surface = ctx.add_model(|ctx| {
+            ConversationSurfaceModel::new_for_terminal_view(
                 terminal_view_id,
                 agent_view_controller.clone(),
                 ctx,
             )
         });
-        let ai_input_model = ctx.add_model(|ctx| {
-            let mut model = BlocklistAIInputModel::new_for_terminal_view(
+        let ai_context_model = ctx.add_model(|ctx| {
+            BlocklistAIContextModel::new(
+                sessions.clone(),
+                &model_events_handle,
                 model.clone(),
-                agent_view_controller.clone(),
+                terminal_view_id,
+                conversation_surface.clone(),
+                ctx,
+            )
+        });
+        let ai_input_model = ctx.add_model(|ctx| {
+            let mut model = BlocklistAIInputModel::new(
+                model.clone(),
+                conversation_surface.clone(),
                 ai_context_model.clone(),
                 terminal_view_id,
                 ctx,
@@ -3485,12 +3492,12 @@ impl TerminalView {
             )
         });
         let ai_controller = ctx.add_model(|ctx| {
-            BlocklistAIController::new_for_terminal_view(
+            BlocklistAIController::new(
                 ai_input_model.clone(),
                 ai_context_model.clone(),
+                conversation_surface.clone(),
                 ai_action_model.clone(),
                 active_session.clone(),
-                agent_view_controller.clone(),
                 model.clone(),
                 terminal_view_id,
                 ctx,

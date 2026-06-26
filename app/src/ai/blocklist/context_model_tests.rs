@@ -23,7 +23,8 @@ use crate::ai::blocklist::agent_view::{
     AgentViewController, AgentViewEntryOrigin, EphemeralMessageModel,
 };
 use crate::ai::blocklist::{
-    BlocklistAIHistoryModel, QueuedQuery, QueuedQueryModel, QueuedQueryOrigin,
+    BlocklistAIHistoryModel, ConversationSurfaceModel, QueuedQuery, QueuedQueryModel,
+    QueuedQueryOrigin,
 };
 #[cfg(feature = "local_fs")]
 use crate::code_review::git_repo_model::GitRepoStatusModel;
@@ -131,12 +132,18 @@ fn build_test_context_model(app: &mut App) -> ModelHandle<BlocklistAIContextMode
             ephemeral_message_model,
         )
     });
-
-    app.add_model(|_| {
-        BlocklistAIContextModel::new_for_terminal_view_test(
-            terminal_model,
+    let conversation_surface = app.add_model(|_| {
+        ConversationSurfaceModel::new_for_terminal_view_test(
             terminal_view_id,
             agent_view_controller,
+        )
+    });
+
+    app.add_model(|_| {
+        BlocklistAIContextModel::new_for_test(
+            terminal_model,
+            terminal_view_id,
+            conversation_surface,
         )
     })
 }
@@ -155,8 +162,14 @@ fn build_tui_context_model(app: &mut App) -> (ModelHandle<BlocklistAIContextMode
         None,
     )));
     let terminal_surface_id = EntityId::new();
+    let conversation_surface =
+        app.add_model(|_| ConversationSurfaceModel::new_for_tui_surface_test(terminal_surface_id));
     let model = app.add_model(|_| {
-        BlocklistAIContextModel::new_for_tui_surface_test(terminal_model, terminal_surface_id)
+        BlocklistAIContextModel::new_for_test(
+            terminal_model,
+            terminal_surface_id,
+            conversation_surface,
+        )
     });
     (model, terminal_surface_id)
 }

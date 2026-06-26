@@ -6,10 +6,8 @@
 use anyhow::Result;
 use warp_core::channel::{Channel, ChannelState};
 use warp_core::features;
-mod args;
 
 fn main() -> Result<()> {
-    args::forward_args_to_environment()?;
     ChannelState::set(
         ChannelState::new(Channel::Dev, warp_channel_config::load_config!("dev"))
             .with_additional_features(features::DEBUG_FLAGS)

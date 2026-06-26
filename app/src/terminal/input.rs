@@ -11365,7 +11365,7 @@ impl Input {
         if self
             .ai_context_model
             .as_ref(ctx)
-            .is_targeting_existing_conversation()
+            .is_targeting_existing_conversation(ctx)
         {
             self.ai_context_model.update(ctx, |ai_context_model, ctx| {
                 ai_context_model.set_pending_query_state_for_new_conversation(
@@ -16256,7 +16256,7 @@ fn maybe_render_ai_input_indicators(
 
     let all_icons = if ai_context_model
         .as_ref(app)
-        .is_targeting_existing_conversation()
+        .is_targeting_existing_conversation(app)
     {
         let reply_icon = render_ai_follow_up_icon(ai_follow_up_icon_mouse_state, app);
         Flex::row()

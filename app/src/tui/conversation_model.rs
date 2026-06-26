@@ -6,8 +6,8 @@ use warpui::{AppContext, Entity, EntityId, ModelContext, ModelHandle, SingletonE
 use crate::ai::agent::conversation::{AIConversationId, ConversationStatus};
 use crate::ai::blocklist::agent_view::AgentViewEntryOrigin;
 use crate::ai::blocklist::{
-    BlocklistAIContextEvent, BlocklistAIContextModel, BlocklistAIController,
-    BlocklistAIHistoryEvent, BlocklistAIHistoryModel, ConversationStatusUpdate,
+    BlocklistAIController, BlocklistAIHistoryEvent, BlocklistAIHistoryModel,
+    ConversationStatusUpdate, ConversationSurfaceEvent, ConversationSurfaceModel,
 };
 
 /// Events emitted by a TUI conversation model for presentation layers.
@@ -39,7 +39,7 @@ pub(super) enum TuiConversationModelEvent {
 /// submission, and history-backed stream events for one TUI surface.
 pub(super) struct TuiConversationModel {
     terminal_surface_id: EntityId,
-    context_model: ModelHandle<BlocklistAIContextModel>,
+    conversation_surface: ModelHandle<ConversationSurfaceModel>,
     ai_controller: ModelHandle<BlocklistAIController>,
 }
 
@@ -47,12 +47,12 @@ impl TuiConversationModel {
     /// Creates a TUI conversation model around the shared production AI models.
     pub(super) fn new(
         terminal_surface_id: EntityId,
-        context_model: ModelHandle<BlocklistAIContextModel>,
+        conversation_surface: ModelHandle<ConversationSurfaceModel>,
         ai_controller: ModelHandle<BlocklistAIController>,
         ctx: &mut ModelContext<Self>,
     ) -> Self {
-        ctx.subscribe_to_model(&context_model, |model, _, event, ctx| {
-            if matches!(event, BlocklistAIContextEvent::PendingQueryStateUpdated) {
+        ctx.subscribe_to_model(&conversation_surface, |model, _, event, ctx| {
+            if matches!(event, ConversationSurfaceEvent::PendingQueryStateUpdated) {
                 ctx.emit(TuiConversationModelEvent::SelectedConversationChanged {
                     conversation_id: model.selected_conversation_id(ctx),
                 });
@@ -64,14 +64,16 @@ impl TuiConversationModel {
         );
         Self {
             terminal_surface_id,
-            context_model,
+            conversation_surface,
             ai_controller,
         }
     }
 
     /// Returns this surface's currently selected next-prompt target.
     fn selected_conversation_id(&self, ctx: &AppContext) -> Option<AIConversationId> {
-        self.context_model.as_ref(ctx).selected_conversation_id(ctx)
+        self.conversation_surface
+            .as_ref(ctx)
+            .selected_conversation_id(ctx)
     }
 
     /// Selects a live conversation as this surface's next-prompt target.
@@ -89,12 +91,8 @@ impl TuiConversationModel {
                 self.terminal_surface_id
             ));
         }
-        self.context_model.update(ctx, |context_model, ctx| {
-            context_model.set_pending_query_state_for_existing_conversation(
-                conversation_id,
-                AgentViewEntryOrigin::Cli,
-                ctx,
-            );
+        self.conversation_surface.update(ctx, |surface, ctx| {
+            surface.select_existing_conversation(conversation_id, AgentViewEntryOrigin::Cli, ctx);
         });
         Ok(())
     }
@@ -104,9 +102,9 @@ impl TuiConversationModel {
         &mut self,
         ctx: &mut ModelContext<Self>,
     ) -> anyhow::Result<AIConversationId> {
-        self.context_model
-            .update(ctx, |context_model, ctx| {
-                context_model.try_start_new_conversation(AgentViewEntryOrigin::Cli, ctx)
+        self.conversation_surface
+            .update(ctx, |surface, ctx| {
+                surface.try_start_new_conversation(AgentViewEntryOrigin::Cli, ctx)
             })
             .map_err(Into::into)
     }

@@ -11,12 +11,14 @@ use warpui::{
     TypedActionView, View, ViewContext, ViewHandle,
 };
 
+use super::args::TuiArgs;
 use super::conversation_model::{TuiConversationModel, TuiConversationModelEvent};
 use crate::ai::agent::conversation::AIConversationId;
 use crate::ai::agent::AIAgentTextSection;
 use crate::ai::blocklist::{
     BlocklistAIActionModel, BlocklistAIContextModel, BlocklistAIController,
     BlocklistAIHistoryModel, BlocklistAIInputModel, ConversationStatusUpdate,
+    ConversationSurfaceModel,
 };
 use crate::ai::get_relevant_files::controller::GetRelevantFilesController;
 use crate::banner::BannerState;
@@ -31,8 +33,6 @@ use crate::terminal::{
     PtyIntent, PtyIntentEvent, ShellLaunchData, TerminalManager as TerminalManagerTrait,
     TerminalModel, TerminalSurface,
 };
-const PROMPT_ENV: &str = "WARP_TUI_PROMPT";
-const CONVERSATION_ID_ENV: &str = "WARP_TUI_CONVERSATION_ID";
 
 struct PromptStreamHostView;
 
@@ -71,18 +71,23 @@ impl PromptStreamSurface {
         let terminal_surface_id: EntityId = ctx.view_id();
         let active_session =
             ctx.add_model(|ctx| ActiveSession::new(sessions.clone(), model_events.clone(), ctx));
+        let conversation_surface = ctx.add_model(|ctx| {
+            ConversationSurfaceModel::new_for_tui_surface(terminal_surface_id, ctx)
+        });
         let context_model = ctx.add_model(|ctx| {
-            BlocklistAIContextModel::new_for_tui_surface(
+            BlocklistAIContextModel::new(
                 sessions,
                 &model_events,
                 model.clone(),
                 terminal_surface_id,
+                conversation_surface.clone(),
                 ctx,
             )
         });
         let input_model = ctx.add_model(|ctx| {
-            BlocklistAIInputModel::new_for_tui_surface(
+            BlocklistAIInputModel::new(
                 model.clone(),
+                conversation_surface.clone(),
                 context_model.clone(),
                 terminal_surface_id,
                 ctx,
@@ -100,9 +105,10 @@ impl PromptStreamSurface {
             )
         });
         let ai_controller = ctx.add_model(|ctx| {
-            BlocklistAIController::new_for_tui_surface(
+            BlocklistAIController::new(
                 input_model,
                 context_model.clone(),
+                conversation_surface.clone(),
                 action_model,
                 active_session,
                 model,
@@ -111,7 +117,12 @@ impl PromptStreamSurface {
             )
         });
         let conversation_model = ctx.add_model(|ctx| {
-            TuiConversationModel::new(terminal_surface_id, context_model, ai_controller, ctx)
+            TuiConversationModel::new(
+                terminal_surface_id,
+                conversation_surface,
+                ai_controller,
+                ctx,
+            )
         });
         ctx.subscribe_to_model(&conversation_model, |surface, _, event, ctx| {
             surface.handle_conversation_event(event, ctx)
@@ -313,26 +324,12 @@ impl Entity for PromptStreamSession {
 }
 
 impl SingletonEntity for PromptStreamSession {}
-/// Starts prompt streaming when a prompt was forwarded through the environment.
-pub(super) fn start_from_environment(ctx: &mut AppContext) -> bool {
-    let Ok(prompt) = std::env::var(PROMPT_ENV) else {
+/// Starts prompt streaming when the TUI frontend received a prompt.
+pub(super) fn start(args: TuiArgs, ctx: &mut AppContext) -> bool {
+    let Some(prompt) = args.prompt else {
         return false;
     };
-    let conversation_id = std::env::var(CONVERSATION_ID_ENV)
-        .ok()
-        .map(AIConversationId::try_from)
-        .transpose();
-    let conversation_id = match conversation_id {
-        Ok(conversation_id) => conversation_id,
-        Err(error) => {
-            ctx.terminate_app(
-                TerminationMode::ForceTerminate,
-                Some(Err(anyhow!("Invalid conversation ID: {error}"))),
-            );
-            return true;
-        }
-    };
-    start_prompt_stream(prompt, conversation_id, ctx);
+    start_prompt_stream(prompt, args.conversation_id, ctx);
     true
 }
 
